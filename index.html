@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>展售組簽到系統 App</title>
+  
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+
+  <style>
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .toggle-checkbox:checked { right: 0; border-color: #3b82f6; }
+    .toggle-checkbox:checked + .toggle-label { background-color: #3b82f6; }
+    .toggle-checkbox { right: 0; z-index: 1; border-color: #e5e7eb; transition: all 0.3s; }
+    .toggle-label { width: 3.25rem; height: 1.75rem; background-color: #e5e7eb; border-radius: 9999px; transition: all 0.3s; }
+    .toggle-circle { width: 1.25rem; height: 1.25rem; background-color: white; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: all 0.3s; left: 0.25rem; top: 0.25rem; }
+    .toggle-checkbox:checked ~ .toggle-circle { transform: translateX(1.5rem); }
+    body { background-color: #f3f4f6; display: flex; justify-content: center; }
+    #app-container { width: 100%; max-width: 430px; height: 100vh; background-color: #f9fafb; position: relative; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+  </style>
+</head>
+<body>
+
+<div id="app" id="app-container">
+  
+  <!-- Header -->
+  <header class="bg-blue-600 text-white p-4 sticky top-0 z-20 shadow-md">
+    <h1 class="text-xl font-bold text-center">{{ pageTitle }}</h1>
+    <div v-if="syncStatus" class="absolute right-4 top-5 text-xs bg-blue-500 px-2 py-1 rounded-full flex items-center gap-1">
+      <div class="w-2 h-2 rounded-full" :class="syncStatus === '線上' ? 'bg-green-300' : 'bg-red-300'"></div>
+      {{ syncStatus }}
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="flex-1 overflow-y-auto hide-scrollbar pb-20 p-4">
+    
+    <!-- Tab 1: 總覽 -->
+    <div v-show="currentTab === 'dashboard'" class="space-y-4">
+      <div class="bg-blue-50 p-4 rounded-xl border border-blue-100 flex justify-between items-center shadow-sm">
+        <div>
+          <p class="text-sm text-gray-500">系統內總紀錄</p>
+          <p class="text-2xl font-bold text-blue-700">{{ records.length }} 筆</p>
+        </div>
+        <button @click="currentTab = 'records'" class="text-blue-600 text-sm font-semibold flex items-center gap-1">
+          查看全部 <i class="fas fa-chevron-right text-xs"></i>
+        </button>
+      </div>
+
+      <h2 class="text-lg font-bold text-gray-800 mb-2 border-b pb-1">會員出席統計</h2>
+      <div class="grid grid-cols-2 gap-3">
+        <div v-for="member in members" :key="member" 
+             class="bg-white rounded-xl shadow-sm border p-3 flex flex-col justify-between"
+             :class="{'border-blue-500 ring-2 ring-blue-200': selectedFilter === member, 'border-gray-200': selectedFilter !== member}">
+          
+          <div class="flex justify-between items-start mb-2 cursor-pointer" @click="toggleFilter(member)">
+            <span class="font-bold text-gray-800">{{ member }}</span>
+            <span v-if="selectedFilter === member" class="text-blue-500 text-xs"><i class="fas fa-check-circle"></i></span>
+          </div>
+          
+          <div class="text-sm text-gray-600 space-y-1 mb-3 cursor-pointer" @click="toggleFilter(member)">
+            <div class="flex justify-between">
+              <span>總次數:</span>
+              <span class="font-semibold">{{ getMemberTotal(member) }}</span>
+            </div>
+            <div class="flex justify-between text-blue-600">
+              <span>計費(核撥):</span>
+              <span class="font-bold">{{ getMemberFundedTotal(member) }}</span>
+            </div>
+          </div>
+          
+          <button @click.stop="openSummary(member)" 
+                  class="w-full bg-blue-50 hover:bg-blue-100 text-blue-600 font-semibold py-1.5 rounded-lg text-xs transition-colors flex justify-center items-center gap-1">
+            <i class="fas fa-file-alt"></i> 產生摘要
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: 紀錄列表 -->
+    <div v-show="currentTab === 'records'" class="space-y-4">
+      <div class="flex justify-between items-center mb-2">
+        <h2 class="text-lg font-bold text-gray-800">
+          出勤明細 
+          <span v-if="selectedFilter" class="text-sm font-normal text-blue-600 bg-blue-100 px-2 py-0.5 rounded-full ml-2">
+            篩選: {{ selectedFilter }} 
+            <i class="fas fa-times ml-1 cursor-pointer" @click="selectedFilter = null"></i>
+          </span>
+        </h2>
+      </div>
+
+      <div v-if="filteredRecords.length === 0" class="text-center text-gray-400 py-10">
+        <i class="fas fa-inbox text-4xl mb-2"></i>
+        <p>目前沒有紀錄</p>
+      </div>
+
+      <div v-for="(rec, index) in sortedFilteredRecords" :key="rec.id || index" 
+           class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-3">
+        <div class="flex justify-between items-start border-b border-gray-50 pb-2">
+          <div>
+            <div class="text-sm text-gray-500">{{ rec['日期'] }} ({{ rec['星期'] }})</div>
+            <div class="font-bold text-gray-800 text-lg">{{ rec['區域'] }}</div>
+          </div>
+          <div>
+            <span v-if="rec['核撥經費'] === 'TRUE' || rec['核撥經費'] === true || rec['核撥經費'] === '1'" class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-md font-bold">
+              <i class="fas fa-dollar-sign"></i> 有核撥
+            </span>
+            <span v-else class="bg-gray-100 text-gray-500 text-xs px-2 py-1 rounded-md">無核撥</span>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500 mb-1">出席人員 ({{ getPresentMembers(rec).length }}人):</div>
+          <div class="flex flex-wrap gap-1.5">
+            <span v-for="m in getPresentMembers(rec)" :key="m" 
+                  class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-100"
+                  :class="{'bg-yellow-100 text-yellow-800 border-yellow-300 font-bold': m === selectedFilter}">
+              {{ m }}
+            </span>
+            <span v-if="getPresentMembers(rec).length === 0" class="text-xs text-gray-400">無人出席</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 3: 新增場次 -->
+    <div v-show="currentTab === 'add'" class="space-y-6">
+      <div class="bg-white rounded-xl shadow-sm border p-4 space-y-4">
+        <h2 class="text-lg font-bold text-gray-800 border-b pb-2">基本資訊</h2>
+        <div class="space-y-1">
+          <label class="text-sm text-gray-600 font-semibold">日期</label>
+          <input type="date" v-model="newSession.date" class="w-full border rounded-lg p-2.5 bg-gray-50 focus:ring-2 focus:ring-blue-500 outline-none">
+        </div>
+        <div class="space-y-1">
+          <label class="text-sm text-gray-600 font-semibold">區域 (如：南港軟體園區)</label>
+          <input type="text" v-model="newSession.area" placeholder="請輸入展售地點" class="w-full border rounded-lg p-2.5 bg-gray-50 focus:ring-2 focus:ring-blue-500 outline-none">
+        </div>
+        <div class="flex items-center justify-between py-2">
+          <span class="text-sm text-gray-600 font-semibold">核撥經費</span>
+          <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+            <input type="checkbox" v-model="newSession.funded" name="toggle" id="fundToggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+            <label for="fundToggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+            <div class="toggle-circle absolute block"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border p-4 space-y-4">
+        <div class="flex justify-between items-center border-b pb-2">
+          <h2 class="text-lg font-bold text-gray-800">出席名單</h2>
+          <span class="text-sm bg-blue-100 text-blue-700 px-2 py-1 rounded-full font-bold">
+            已選 {{ Object.values(newSession.attendance).filter(v => v).length }} 人
+          </span>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <button v-for="member in members" :key="member"
+                  @click="newSession.attendance[member] = !newSession.attendance[member]"
+                  class="py-3 px-1 rounded-lg text-sm font-semibold transition-colors border"
+                  :class="newSession.attendance[member] ? 'bg-blue-500 text-white border-blue-600' : 'bg-gray-50 text-gray-600 border-gray-200'">
+            {{ member }}
+          </button>
+        </div>
+      </div>
+
+      <button @click="submitNewSession" class="w-full bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-blue-700 active:scale-95 transition-transform flex justify-center items-center gap-2">
+        <i class="fas fa-cloud-upload-alt"></i> 儲存並上傳至資料庫
+      </button>
+    </div>
+
+    <!-- Tab 4: 設定 -->
+    <div v-show="currentTab === 'settings'" class="space-y-4">
+      
+      <!-- Google 試算表匯入區塊 -->
+      <div class="bg-white rounded-xl shadow-sm border p-4 space-y-3">
+        <h2 class="font-bold text-gray-800 border-b pb-2"><i class="fab fa-google text-blue-500 mr-2"></i>連結 Google 試算表</h2>
+        <p class="text-xs text-gray-500 mb-2">直接從您的雲端試算表 (工作表A) 載入資料以供測試與預覽。請確保試算表權限已設定為「知道連結的人均可查看」。</p>
+        <button @click="importFromGoogleSheets" :disabled="isGoogleLoading" class="w-full bg-blue-50 border border-blue-200 text-blue-700 font-bold py-2 px-4 rounded-lg hover:bg-blue-100 transition-colors flex justify-center items-center gap-2">
+          <i class="fas fa-sync-alt" :class="{'animate-spin': isGoogleLoading}"></i> 
+          {{ isGoogleLoading ? '載入中...' : '匯入雲端試算表資料' }}
+        </button>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border p-4 space-y-3">
+        <h2 class="font-bold text-gray-800 border-b pb-2"><i class="fas fa-database text-green-600 mr-2"></i>Firebase 狀態</h2>
+        <div class="text-sm text-gray-600">
+          <p>專案 ID: <span class="font-mono text-gray-800">crm-1225-003</span></p>
+          <p>資料節點: <span class="font-mono text-green-600">_ntfarmer_attendance_records</span></p>
+          <p class="mt-2 text-xs text-gray-400">系統會自動監聽並同步此節點的新資料。</p>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border p-4 space-y-3">
+        <h2 class="font-bold text-gray-800 border-b pb-2"><i class="fas fa-file-csv text-gray-600 mr-2"></i>手動匯入舊資料 (CSV)</h2>
+        <input type="file" id="csvFile" accept=".csv" @change="importCSV" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200">
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- Bottom Navigation -->
+  <nav class="bg-white border-t border-gray-200 fixed bottom-0 w-full max-w-[430px] z-30 pb-safe">
+    <div class="flex justify-around items-center h-16">
+      <button @click="currentTab = 'dashboard'" class="flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors" :class="currentTab === 'dashboard' ? 'text-blue-600' : 'text-gray-400'">
+        <i class="fas fa-chart-pie text-xl"></i>
+        <span class="text-[10px] font-semibold">總覽</span>
+      </button>
+      <button @click="currentTab = 'records'" class="flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors" :class="currentTab === 'records' ? 'text-blue-600' : 'text-gray-400'">
+        <i class="fas fa-list-alt text-xl"></i>
+        <span class="text-[10px] font-semibold">紀錄</span>
+      </button>
+      <button @click="currentTab = 'add'" class="flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors relative">
+        <div class="absolute -top-4 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg border-4 border-white" :class="currentTab === 'add' ? 'bg-blue-700' : 'bg-blue-500'">
+          <i class="fas fa-plus text-xl"></i>
+        </div>
+        <span class="text-[10px] font-semibold mt-6 text-gray-600">新增</span>
+      </button>
+      <button @click="currentTab = 'settings'" class="flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors" :class="currentTab === 'settings' ? 'text-blue-600' : 'text-gray-400'">
+        <i class="fas fa-cog text-xl"></i>
+        <span class="text-[10px] font-semibold">設定</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Summary Modal -->
+  <div v-if="summaryModal.isOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 px-4">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col max-h-[80vh]">
+      <div class="bg-blue-600 p-4 text-white flex justify-between items-center">
+        <h3 class="font-bold">結算摘要 - {{ summaryModal.member }}</h3>
+        <button @click="summaryModal.isOpen = false" class="text-white hover:text-gray-200">
+          <i class="fas fa-times text-xl"></i>
+        </button>
+      </div>
+      <div class="p-4 flex-1 overflow-y-auto">
+        <textarea ref="summaryTextarea" v-model="summaryModal.content" readonly class="w-full h-48 p-3 border rounded-lg bg-gray-50 text-gray-700 text-sm focus:outline-none focus:border-blue-500 resize-none"></textarea>
+      </div>
+      <div class="p-4 border-t bg-gray-50">
+        <button @click="copySummary" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg flex justify-center items-center transition-colors">
+          <i class="fas fa-copy mr-2"></i> 複製到剪貼簿
+        </button>
+        <div v-if="summaryModal.copied" class="text-green-600 text-sm text-center mt-2 font-semibold">
+          <i class="fas fa-check"></i> 已複製！
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const { createApp } = Vue;
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyALj-w6MSC_5CgGCVUVFveoV8-ykRxcu24",
+    authDomain: "crm-1225-003.firebaseapp.com",
+    databaseURL: "https://crm-1225-003-default-rtdb.firebaseio.com",
+    projectId: "crm-1225-003",
+    storageBucket: "crm-1225-003.firebasestorage.app",
+    messagingSenderId: "566985177794",
+    appId: "1:566985177794:web:fcf21c033bd62c3bd7195b"
+  };
+
+  if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+  }
+  const db = firebase.database();
+  const recordsRef = db.ref('_ntfarmer_attendance_records');
+
+  createApp({
+    data() {
+      const members = ['邱順群','朱雪梅','陳永龍','廖子儼','洪柏榕','程英哲','蔡豪仲','邱奕豪','黃君韡','簡誌良','吳憶宜','陳柏承','黃耀寬','張文棟','葉家豪','周子耀','秦偉恩'];
+      const today = new Date();
+      const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+
+      return {
+        currentTab: 'settings', 
+        members: members,
+        records: [],
+        selectedFilter: null,
+        syncStatus: '連線中...',
+        isGoogleLoading: false,
+        
+        newSession: {
+          date: todayStr,
+          area: '',
+          funded: true,
+          attendance: members.reduce((acc, curr) => { acc[curr] = false; return acc; }, {})
+        },
+
+        summaryModal: {
+          isOpen: false,
+          member: '',
+          content: '',
+          copied: false
+        }
+      }
+    },
+    computed: {
+      pageTitle() {
+        const titles = { 'dashboard': '展售組簽到總覽', 'records': '出勤紀錄', 'add': '新增場次', 'settings': '系統設定' };
+        return titles[this.currentTab];
+      },
+      filteredRecords() {
+        if (!this.selectedFilter) return this.records;
+        return this.records.filter(r => r[this.selectedFilter] == 1 || r[this.selectedFilter] === '1.0');
+      },
+      sortedFilteredRecords() {
+        return [...this.filteredRecords].sort((a, b) => new Date(b['日期']) - new Date(a['日期']));
+      }
+    },
+    methods: {
+      initFirebase() {
+        recordsRef.on('value', (snapshot) => {
+          this.syncStatus = '線上';
+          const data = snapshot.val();
+          if (data) {
+            const parsedRecords = Object.keys(data).map(key => ({ id: key, ...data[key] }));
+            // Firebase 資料優先，若有外部匯入資料則避免重複或直接顯示
+            // 這裡為了簡化，直接將 Firebase 資料附加到現有紀錄中 (過濾重複 ID)
+            const existingIds = new Set(this.records.map(r => r.id).filter(id => id));
+            const newFirebaseRecords = parsedRecords.filter(r => !existingIds.has(r.id));
+            this.records = [...this.records, ...newFirebaseRecords];
+          }
+        }, (error) => {
+          console.error("Firebase 讀取失敗:", error);
+          this.syncStatus = '離線';
+        });
+      },
+      
+      // 解析並匯入 Google 試算表資料
+      async importFromGoogleSheets() {
+        this.isGoogleLoading = true;
+        // 擷取試算表 ID 並指定工作表名稱
+        const sheetId = '1kf-Y8v5sUW6nv1ZuScixC4edzzbewQsIEG_31d2Nhbc';
+        const sheetName = '工作表A';
+        // 利用 gviz CSV API 端點讀取公開資料
+        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+
+        try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error('網路回應錯誤');
+          
+          const csvText = await response.text();
+          
+          Papa.parse(csvText, {
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: function(header) {
+              return header.trim();
+            },
+            complete: (results) => {
+              // 過濾掉空日期資料
+              const newRecords = results.data.filter(row => row['日期']);
+              
+              if (newRecords.length === 0) {
+                alert('試算表中沒有找到有效資料或格式不符。');
+              } else {
+                this.records = [...newRecords, ...this.records];
+                alert(`✅ 成功從 Google 雲端試算表載入 ${newRecords.length} 筆資料！`);
+                this.currentTab = 'dashboard';
+              }
+              this.isGoogleLoading = false;
+            },
+            error: (err) => {
+              console.error(err);
+              alert('解析試算表失敗，請確認內容格式。');
+              this.isGoogleLoading = false;
+            }
+          });
+        } catch (error) {
+          console.error('取得試算表失敗:', error);
+          alert('無法載入資料，請確認您的試算表共用設定為「知道連結的人均可查看」。');
+          this.isGoogleLoading = false;
+        }
+      },
+
+      getWeekday(dateString) {
+        const days = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+        return days[new Date(dateString).getDay()];
+      },
+
+      async submitNewSession() {
+        if (!this.newSession.date || !this.newSession.area) {
+          alert('請填寫日期與區域！'); return;
+        }
+        const recordData = {
+          '日期': this.newSession.date.replace(/-/g, '/'),
+          '區域': this.newSession.area,
+          '核撥經費': this.newSession.funded ? 'TRUE' : 'FALSE',
+          '星期': this.getWeekday(this.newSession.date)
+        };
+        this.members.forEach(m => { if (this.newSession.attendance[m]) recordData[m] = 1.0; });
+
+        try {
+          await recordsRef.push(recordData);
+          alert('✅ 新增成功！資料已同步至雲端。');
+          this.newSession.area = '';
+          this.members.forEach(m => this.newSession.attendance[m] = false);
+          this.currentTab = 'records';
+        } catch (error) {
+          alert('上傳失敗，請檢查網路連線。');
+        }
+      },
+
+      getMemberTotal(member) {
+        return this.records.filter(r => r[member] == 1 || r[member] === '1.0').length;
+      },
+      
+      getMemberFundedTotal(member) {
+        return this.records.filter(r => {
+          const isAttended = (r[member] == 1 || r[member] === '1.0');
+          const isFunded = (r['核撥經費'] === 'TRUE' || r['核撥經費'] === true || r['核撥經費'] === '1');
+          return isAttended && isFunded;
+        }).length;
+      },
+      
+      getPresentMembers(record) {
+        return this.members.filter(m => record[m] == 1 || record[m] === '1.0');
+      },
+
+      toggleFilter(member) {
+        if (this.selectedFilter === member) { this.selectedFilter = null; } 
+        else { this.selectedFilter = member; this.currentTab = 'records'; }
+      },
+
+      openSummary(member) {
+        const fundedCount = this.getMemberFundedTotal(member);
+        let content = `${member}，${fundedCount}\n`;
+        const attendedRecords = this.records.filter(r => {
+          return (r[member] == 1 || r[member] === '1.0') && (r['核撥經費'] === 'TRUE' || r['核撥經費'] === true || r['核撥經費'] === '1');
+        }).sort((a, b) => new Date(a['日期']) - new Date(b['日期']));
+
+        attendedRecords.forEach(r => { content += `${r['日期']}/${r['區域']}\n`; });
+        this.summaryModal.member = member; this.summaryModal.content = content.trim();
+        this.summaryModal.copied = false; this.summaryModal.isOpen = true;
+      },
+
+      copySummary() {
+        const textarea = this.$refs.summaryTextarea;
+        textarea.select(); document.execCommand('copy');
+        this.summaryModal.copied = true;
+        setTimeout(() => { this.summaryModal.copied = false; }, 2000);
+      },
+
+      importCSV(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        Papa.parse(file, {
+          header: true, skipEmptyLines: true,
+          transformHeader: function(header) { return header.trim(); },
+          complete: (results) => {
+            const newRecords = results.data.filter(row => row['日期']);
+            this.records = [...newRecords, ...this.records];
+            alert(`已載入 ${newRecords.length} 筆資料。`);
+            this.currentTab = 'dashboard'; event.target.value = '';
+          }
+        });
+      }
+    },
+    mounted() {
+      this.initFirebase();
+      document.documentElement.style.setProperty('--sat', 'env(safe-area-inset-top)');
+      document.documentElement.style.setProperty('--sab', 'env(safe-area-inset-bottom)');
+    }
+  }).mount('#app')
+</script>
+
+<style>
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+</style>
+
+</body>
+</html>
